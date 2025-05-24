@@ -1,9 +1,10 @@
+import traceback
 import requests
 import csv
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 s = requests.Session()
 
@@ -17,8 +18,7 @@ backloggd_id = j['backloggd_id']
 backloggd_csrf = j['csrf']
 backloggd_cookie = j['cookie']
 
-access_url = 'https://id.twitch.tv/oauth2/token?client_id=%s&client_secret=%s&grant_type=client_credentials' % (
-    id, secret)
+access_url = f'https://id.twitch.tv/oauth2/token?client_id={id}&client_secret={secret}&grant_type=client_credentials'
 r = s.post(access_url)
 response = json.loads(r.text)
 
@@ -28,133 +28,210 @@ endpoint = 'https://api.igdb.com/v4/games/'
 headers = {'Client-ID': id, 'Authorization': 'Bearer ' + access_token}
 
 BACKLOGGD_HEADERS = {
-    'Connection': 'keep-alive',
-    'sec-ch-ua': '" Not A;Brand";v="99", "Chromium";v="90", "Google Chrome";v="90"',
-    'Accept': '*/*',
-    'X-CSRF-Token': '',
-    'X-Requested-With': 'XMLHttpRequest',
-    'sec-ch-ua-mobile': '?0',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/537.36',
-    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-    'Origin': 'https://www.backloggd.com',
-    'Sec-Fetch-Site': 'same-origin',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Dest': 'empty',
-    'Referer': 'https://www.backloggd.com/',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Cookie': '',
+    "accept": "*/*",
+    "accept-language": "en-US,en;q=0.9",
+    "cache-control": "no-cache",
+    "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+    "pragma": "no-cache",
+    "priority": "u=1, i",
+    "sec-ch-ua": "\"Google Chrome\";v=\"136\", \"Vivaldi\";v=\"7.4\", \"Not.A/Brand\";v=\"99\", \"Chromium\";v=\"136\"",
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": "\"macOS\"",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+    "x-csrf-token": backloggd_csrf,
+    "x-requested-with": "XMLHttpRequest"
+}
+
+cookies = {
+    'ne_cookies_consent': 'true',
+    '_backloggd_session': backloggd_cookie,
 }
 
 
-def update_cookie(session):
-    BACKLOGGD_HEADERS['Cookie'] = "ne_cookies_consent=true; _backloggd_session=" + session
-
-
-def update_csrf(key):
-    BACKLOGGD_HEADERS['X-CSRF-Token'] = key
-
-
 def get_game_id(name, platform):
+    time.sleep(0.5)
     try:
-        body = 'fields name; search "%s"; where platforms = (%s);' % (
-            name, platform)
+        body = f'fields name; search "{name}"; where platforms = ({platform});'
         r = s.post(endpoint, headers=headers, data=body)
         j = json.loads(r.text)
-        actual_game = [g['id'] for g in j]
-        if len(actual_game) > 0:
-            return actual_game[0]  # this is the ID
-        else:
-            return None  # game not found
-    except:
-        print("Error getting game id " + name)
-        return None
+
+        if 'message' in j:
+            print(j['message'])
+            print('Waiting...')
+            time.sleep(5)   
+            return (None, None)
+        
+        if len(j) == 0:
+            return (None, None)
+        
+        if 'status' in j[0]:
+            print(f'{name}: {j}')
+            return (None, None)
+        
+        return (j[0]['id'], j[0]['name'])
+    except Exception:
+        traceback.print_exc()
+        return (None, None)
 
 
-def get_plaform_id():
+def get_platform_ids():
     platforms_endpont = 'https://api.igdb.com/v4/platforms'
     try:
         body = 'fields name; limit 300;'
         r = s.post(platforms_endpont, headers=headers, data=body)
         j = json.loads(r.text)
-        if len(j) > 0:
-            return j  # this is the ID
-        else:
-            return None  # game not found
+        if len(j) == 0:
+            print("Error getting platform names")
+            return None
+        return {x['name']: x['id'] for x in j}
     except:
         print("Error getting platform names")
         return None
 
 
-def add_game(game_id, rating, platform, is_play, is_playing, is_backlog, is_wishlist, status):
+def add_game(game_id, rating, platform_id, status, time_completed, review, **kwargs):
+    completed = datetime.strptime(time_completed, "%B %d, %Y %I:%M %p")
+    start = completed - timedelta(days=1)
+    skip_time = completed <= datetime(2021, 11, 12)
     data = {
         'game_id': game_id,
         'playthroughs[0][id]': -1,
         'playthroughs[0][title]': 'Log',
         'playthroughs[0][rating]': rating,
-        'playthroughs[0][review]': '',
+        'playthroughs[0][review]': review,
         'playthroughs[0][review_spoilers]': 'false',
-        'playthroughs[0][platform]': platform,
-        'playthroughs[0][hours]': '',
-        'playthroughs[0][minutes]': '',
+        'playthroughs[0][platform]': platform_id,
+        'playthroughs[0][hours_played]': '',
+        'playthroughs[0][mins_played]': '',
+        'playthroughs[0][sync_sessions]': 'true',
         'playthroughs[0][is_master]': 'false',
         'playthroughs[0][is_replay]': 'false',
         'playthroughs[0][start_date]': '',
-        'playthroughs[0][finish_date]': '',
-        'log[is_play]': is_play,
-        'log[is_playing]': is_playing,
-        'log[is_backlog]': is_backlog,
-        'log[is_wishlist]': is_wishlist,
+        'playthroughs[0][finish_date]': completed.strftime("%Y-%m-%d") if not skip_time else '',
+        'playthroughs[0][edition_id]': '',
+        'playthroughs[0][medium_id]': '',
+        'playthroughs[0][played_platform]': '',
+        'playthroughs[0][storefront_id]': '',
+        'playthroughs[0][hours_finished]': '',
+        'playthroughs[0][mins_finished]': '',
+        'playthroughs[0][hours_mastered]': '',
+        'playthroughs[0][mins_mastered]': '',
+        'log[game_liked]': 'false',
+        'log[is_play]': 'true',
+        'log[is_playing]': 'false',
+        'log[is_backlog]': 'false',
+        'log[is_wishlist]': 'false',
         # played, completed (default), retired, shelved, abandoned
         'log[status]': status,
         'log[id]': '',
-        'modal_type': 'quick'
+        'log[total_hours]': '',
+        'log[total_minutes]': '',
+        'log[time_source]': '0',
+        'modal_type': 'full'
     }
-    backloggd_url = 'https://www.backloggd.com/api/user/' + \
-        str(backloggd_id) + '/log/' + str(game_id)
-    add_request = s.post(backloggd_url, headers=BACKLOGGD_HEADERS, params=data)
+
+    if not skip_time:
+        data.update({
+            'dates[-1][0][id]': '-1',
+            'dates[-1][0][range_start_date]': start.strftime("%Y-%m-%d"),
+            'dates[-1][0][range_end_date]': completed.strftime("%Y-%m-%d"),
+            'dates[-1][0][edited]': 'true',
+            'dates[-1][0][status]': '5',
+            'dates[-1][0][note]': '',
+            'dates[-1][0][hours]': '',
+            'dates[-1][0][minutes]': '',
+            'dates[-1][0][start_date]': '',
+            'dates[-1][0][finish_date]': completed.strftime("%Y-%m-%d"),
+        })
+
+    backloggd_url = f'https://backloggd.com/api/user/{backloggd_id}/log/{game_id}'
+    add_request = s.post(backloggd_url, headers=BACKLOGGD_HEADERS, data=data, cookies=cookies)
     return add_request.status_code
 
 
-# Match game names to IGDB IDs, submit to backloggd
-# Games with no IDs will be written to text file notfound.txt
-update_cookie(backloggd_cookie)
-update_csrf(backloggd_csrf)
-platforms = get_plaform_id()
-not_found_games = open('notfound.txt', 'w')
-start_from_row = 1
-index = 0
+def write_out_csv(games):
+    with open('games.csv', 'w') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(games)
+
+
+platforms = get_platform_ids()
+
+games = {}
+fieldnames = []
+unknown_platforms = set()
+unknown_games = set()
+
 with open('games.csv', 'r') as csvfile:
-    reader = csv.reader(csvfile, delimiter=',')
-    for row in reader:
-        if index < start_from_row:
-            index += 1
-            continue
-        name = row[0]
-        platform_name = row[1]
-        is_play = row[2]
-        is_playing = row[3]
-        is_backlog = row[4]
-        is_wishlist = row[5]
-        status = row[6]
-        rating = row[7]
-        trying = True
-        while trying:
-            platform = next(i for i in platforms if i['name'] == platform_name)
-            game_id = get_game_id(name, platform['id'])
-            if game_id is not None:
-                status = add_game(
-                    game_id, rating, platform['id'], is_play, is_playing, is_backlog, is_wishlist, status)
-                trying = False
-                if status < 400:
-                    print('Added ' + name)
-                elif status == 429:
-                    print('Hit request limit, pausing')
-                    trying = True  # try again
-                    time.sleep(60*3)
-                    print('Trying again')
-                else:
-                    print('Game already added or headers error ' + name)
-            else:
-                not_found_games.write(','.join(row) + '\n')
-                trying = False
-not_found_games.close()
+    games_reader = csv.DictReader(csvfile)
+    if 'platform_id' not in games_reader.fieldnames:
+        games_reader.fieldnames.append('platform_id')
+    if 'game_id' not in games_reader.fieldnames:
+        games_reader.fieldnames.append('game_id')
+    if 'found_name' not in games_reader.fieldnames:
+        games_reader.fieldnames.append('found_name')
+    if 'uploaded' not in games_reader.fieldnames:
+        games_reader.fieldnames.append('uploaded')
+    fieldnames = list(games_reader.fieldnames)
+    games = list(games_reader)
+
+# try and find the platform first
+for row in games:
+    platform = row['platform']
+    platform_id = platforms[platform] if platform in platforms else None
+    if platform_id is None:
+        unknown_platforms.add(platform)
+        continue
+
+    row['platform_id'] = platform_id
+
+# bail if any platforms are bad
+if len(unknown_platforms) > 0:
+    for p in sorted(platforms.keys()):
+        print(p)
+    print(f'unknown platforms: {list(unknown_platforms)}')
+
+    write_out_csv(games)
+    sys.exit(-1)
+
+# now figure out game ids for everything
+for row in [x for x in games if x['game_id'] == '']:
+    name = row['name']
+    platform_id = row['platform_id']
+
+    (game_id, game_name) = get_game_id(name, platform_id)
+    if game_id is None:
+        unknown_games.add(name)
+        continue
+    else:
+        row['game_id'] = game_id
+        row['found_name'] = game_name
+
+# bail if any games are unknown, and let them know which ones
+if len(unknown_games) > 0:
+    for game in unknown_games:
+        print(game)
+    write_out_csv(games)
+    sys.exit(-1)
+
+# now we're ready to post to backloggd!
+for game in reversed([x for x in games if x['uploaded'] == '']):
+    while True:
+        status = add_game(**game)
+        trying = False
+        if status < 400:
+            print('Added ' + game['name'])
+            game['uploaded'] = True
+            write_out_csv(games)
+            break
+        elif status == 429:
+            print('Hit request limit, pausing')
+            trying = True  # try again
+            time.sleep(10)
+            print('Trying again')
+        else:
+            print('Game already added or headers error ' + game['name'])
+            break
